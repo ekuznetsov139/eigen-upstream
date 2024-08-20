@@ -340,10 +340,11 @@ __global__ void FullReductionKernel(R, const S, I, typename S::CoeffReturnType*,
 
 
 #if defined(EIGEN_HAS_GPU_FP16)
+typedef _Float16 half8 __attribute__((ext_vector_type(8)));
 template <typename S, typename R, typename I>
-__global__ void ReductionInitFullReduxKernelHalfFloat(R, const S, I, half2*);
+__global__ void ReductionInitFullReduxKernelHalfFloat(R, const S, I, half8*);
 template <int B, int N, typename S, typename R, typename I>
-__global__ void FullReductionKernelHalfFloat(R, const S, I, half*, half2*);
+__global__ void FullReductionKernelHalfFloat(R, const S, I, half*, half8*);
 template <int NPT, typename S, typename R, typename I>
 __global__ void InnerReductionKernelHalfFloat(R, const S, I, I, half*);
 
@@ -704,8 +705,8 @@ struct TensorEvaluator<const TensorReductionOp<Op, Dims, ArgType, MakePointer_>,
 #if defined(EIGEN_USE_GPU) && (defined(EIGEN_GPUCC))
   template <int B, int N, typename S, typename R, typename I> KERNEL_FRIEND void internal::FullReductionKernel(R, const S, I, typename S::CoeffReturnType*, unsigned int*);
 #if defined(EIGEN_HAS_GPU_FP16)
-  template <typename S, typename R, typename I> KERNEL_FRIEND void internal::ReductionInitFullReduxKernelHalfFloat(R, const S, I, half2*);
-  template <int B, int N, typename S, typename R, typename I> KERNEL_FRIEND void internal::FullReductionKernelHalfFloat(R, const S, I, half*, half2*);
+  template <typename S, typename R, typename I> KERNEL_FRIEND void internal::ReductionInitFullReduxKernelHalfFloat(R, const S, I, internal::half8*);
+  template <int B, int N, typename S, typename R, typename I> KERNEL_FRIEND void internal::FullReductionKernelHalfFloat(R, const S, I, half*, internal::half8*);
   template <int NPT, typename S, typename R, typename I> KERNEL_FRIEND void internal::InnerReductionKernelHalfFloat(R, const S, I, I, half*);
 #endif
   template <int NPT, typename S, typename R, typename I> KERNEL_FRIEND void internal::InnerReductionKernel(R, const S, I, I, typename S::CoeffReturnType*);

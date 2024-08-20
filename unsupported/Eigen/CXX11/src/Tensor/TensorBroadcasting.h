@@ -105,7 +105,7 @@ struct TensorEvaluator<const TensorBroadcastingOp<Broadcast, ArgType>, Device>
   typedef typename XprType::CoeffReturnType CoeffReturnType;
   typedef typename PacketType<CoeffReturnType, Device>::type PacketReturnType;
   static const int PacketSize = internal::unpacket_traits<PacketReturnType>::size;
-  bool nByOne = false, oneByN = false;
+  bool nByOne = false, oneByN = false, noOp = false;
 
   enum {
     IsAligned = true,
@@ -123,6 +123,16 @@ struct TensorEvaluator<const TensorBroadcastingOp<Broadcast, ArgType>, Device>
     EIGEN_STATIC_ASSERT((NumDims > 0), YOU_MADE_A_PROGRAMMING_MISTAKE);
     const InputDimensions& input_dims = m_impl.dimensions();
     const Broadcast& broadcast = op.broadcast();
+
+
+    noOp = true;
+    for (int i = 0; i < NumDims; ++i) {
+      if (broadcast[i] != 1) {
+        noOp = false;
+        break;
+      }
+    }
+
     for (int i = 0; i < NumDims; ++i) {
       eigen_assert(input_dims[i] > 0);
       m_dimensions[i] = input_dims[i] * broadcast[i];
@@ -195,6 +205,9 @@ struct TensorEvaluator<const TensorBroadcastingOp<Broadcast, ArgType>, Device>
     if (internal::is_input_scalar<typename internal::remove_all<InputDimensions>::type>::value) {
       return m_impl.coeff(0);
     }
+
+    if (noOp)
+      return m_impl.coeff(index);
 
     if (static_cast<int>(Layout) == static_cast<int>(ColMajor)) {
       return coeffColMajor(index);
@@ -271,7 +284,11 @@ struct TensorEvaluator<const TensorBroadcastingOp<Broadcast, ArgType>, Device>
       return internal::pset1<PacketReturnType>(m_impl.coeff(0));
     }
 
-    if (static_cast<int>(Layout) == static_cast<int>(ColMajor)) {
+    if (noOp) {
+     return m_impl.template packet<LoadMode>(index);
+   }
+
+    if constexpr (static_cast<int>(Layout) == static_cast<int>(ColMajor)) {
       if (oneByN && !nByOne) {
         return packetNByOne<LoadMode>(index);
       } else if (!oneByN && nByOne) {

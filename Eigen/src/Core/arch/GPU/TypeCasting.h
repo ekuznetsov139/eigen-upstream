@@ -79,30 +79,39 @@ template <>
 struct type_casting_traits<Eigen::half, float> {
   enum {
     VectorizedCast = 1,
-    SrcCoeffRatio = 2,
-    TgtCoeffRatio = 1
+    SrcCoeffRatio = 1,
+    TgtCoeffRatio = 2
   };
 };
 
-template<> EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE float4 pcast<half2, float4>(const half2& a, const half2& b) {
-  float2 r1 = __half22float2(a);
-  float2 r2 = __half22float2(b);
-  return make_float4(r1.x, r1.y, r2.x, r2.y);
+template<> EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE float4 pcast<half8, float4>(const half8& a) {
+  return float4{__half2float(a[0]), __half2float(a[1]), __half2float(a[2]), __half2float(a[3])};
 }
 
 template <>
 struct type_casting_traits<float, Eigen::half> {
   enum {
     VectorizedCast = 1,
-    SrcCoeffRatio = 1,
-    TgtCoeffRatio = 2
+    SrcCoeffRatio = 2,
+    TgtCoeffRatio = 1
   };
 };
 
-template<> EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE half2 pcast<float4, half2>(const float4& a) {
-  // Simply discard the second half of the input
-  return __floats2half2_rn(a.x, a.y);
+
+template<> EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE half8 pcast<float4, half8>(const float4& a, const float4& b) {
+    return half8{__float2half(a.x), __float2half(a.y), __float2half(a.z), __float2half(a.w),
+      __float2half(b.x), __float2half(b.y), __float2half(b.z), __float2half(b.w)
+    };
 }
+
+
+/*
+template<> EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE half8 pcast<float8, half8>(const float8& a) {
+  // Simply discard the second half of the input
+  return half8{__float2half(a.x), __float2half(a.y), __float2half(a.z), __float2half(a.w),
+          __float2half(a.s4), __float2half(a.s5), __float2half(a.s6), __float2half(a.s7)};
+}
+*/
 
 #elif defined EIGEN_VECTORIZE_AVX512
 template <>

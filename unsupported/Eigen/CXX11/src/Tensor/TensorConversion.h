@@ -122,7 +122,11 @@ struct PacketConverter<TensorEvaluator, SrcPacket, TgtPacket, 1, 2> {
     // coefficients twice, but in practice this doesn't negatively impact performance.
     if (m_impl.data() && (index + SrcPacketSize < m_maxIndex)) {
       // Force unaligned memory loads since we can't ensure alignment anymore
+#if EIGEN_HIP_DEVICE_COMPILE
+      return internal::pcast<SrcPacket, TgtPacket>(m_impl.template packet<LoadMode>(index));
+#else
       return internal::pcast<SrcPacket, TgtPacket>(m_impl.template packet<Unaligned>(index));
+#endif
     } else {
       const int TgtPacketSize = internal::unpacket_traits<TgtPacket>::size;
       typedef typename internal::unpacket_traits<SrcPacket>::type SrcType;
@@ -193,7 +197,7 @@ struct TensorEvaluator<const TensorConversionOp<TargetType, ArgType>, Device>
   static const int PacketSize = internal::unpacket_traits<PacketReturnType>::size;
 
   enum {
-    IsAligned = false,
+    IsAligned = true,
     PacketAccess = true,
     Layout = TensorEvaluator<ArgType, Device>::Layout,
     RawAccess = false

@@ -623,8 +623,11 @@ EIGEN_STRONG_INLINE void TensorExecutor<Expression, GpuDevice, Vectorizable, Til
     const int max_blocks = device.getNumGpuMultiProcessors() *
                            device.maxGpuThreadsPerMultiProcessor() / block_size;
     const StorageIndex size = array_prod(evaluator.dimensions());
+    const StorageIndex PacketSize = unpacket_traits<typename TensorEvaluator<Expression, GpuDevice>::PacketReturnType>::size;
+    const StorageIndex vector_size = Vectorizable ? divup<int>(size, PacketSize) : size;
     // Create a least one block to ensure we won't crash when tensorflow calls with tensors of size 0.
-    const int num_blocks = numext::maxi<int>(numext::mini<int>(max_blocks, divup<int>(size, block_size)), 1);
+    const int num_blocks = numext::maxi<int>(numext::mini<int>(max_blocks, divup<int>(vector_size, block_size)), 1);
+    //printf("size %d, vector_size %d, blocks %d\n", size, vector_size, num_blocks);
 
     LAUNCH_GPU_KERNEL(
         (EigenMetaKernel<TensorEvaluator<Expression, GpuDevice>, StorageIndex>),

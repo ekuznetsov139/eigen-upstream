@@ -98,6 +98,25 @@ __device__ inline void atomicReduce(half2* output, half2 accum, R<half>& reducer
     }
   }
 }
+
+template <template <typename T> class R>
+__device__ inline void atomicReduce(half8* output, half8 accum, R<half>& reducer) {
+  unsigned int oldval = *reinterpret_cast<unsigned int*>(output);
+  unsigned int newval = oldval;
+  reducer.reducePacket(accum, reinterpret_cast<half8*>(&newval));
+  if (newval == oldval) {
+    return;
+  }
+  unsigned int readback;
+  while ((readback = atomicCAS((unsigned int*)output, oldval, newval)) != oldval) {
+    oldval = readback;
+    newval = oldval;
+    reducer.reducePacket(accum, reinterpret_cast<half8*>(&newval));
+    if (newval == oldval) {
+      return;
+    }
+  }
+}
 #endif // EIGEN_HAS_GPU_FP16
 
 template <>
@@ -204,14 +223,17 @@ __global__ void FullReductionKernel(Reducer reducer, const Self input, Index num
 #ifdef EIGEN_HAS_GPU_FP16
 template <typename Self,
           typename Reducer, typename Index>
-__global__ void ReductionInitFullReduxKernelHalfFloat(Reducer reducer, const Self input, Index num_coeffs, half2* scratch) {
+__global__ void ReductionInitFullReduxKernelHalfFloat(Reducer reducer, const Self input, Index num_coeffs, half8* scratch) {
   eigen_assert(blockDim.x == 1);
   eigen_assert(gridDim.x == 1);
-  if (num_coeffs % 2 != 0) {
-    half lastCoeff = input.m_impl.coeff(num_coeffs-1);
-    *scratch = __halves2half2(lastCoeff, reducer.initialize());
+  if (num_coeffs % 8 != 0) {
+    Index i;
+    for(i=0; i<(num_coeffs % 8); i++)
+      (*scratch)[i] = input.m_impl.coeff((num_coeffs&~7)+i).data;
+    for(; i<8; i++)
+      (*scratch)[i] = reducer.initialize().data;
   } else {
-    *scratch = reducer.template initializePacket<half2>();
+    *scratch = reducer.template initializePacket<half8>();
   }
 }
 
@@ -220,12 +242,15 @@ template <typename Self,
 __global__ void ReductionInitKernelHalfFloat(Reducer reducer, const Self input, Index num_coeffs, half* output) {
   const Index thread_id = blockIdx.x * blockDim.x + threadIdx.x;
   const Index num_threads = blockDim.x * gridDim.x;
-  const Index num_packets = num_coeffs / 2;
+  const Index num_packets = num_coeffs / 8;
   for (Index i = thread_id; i < num_packets; i += num_threads) {
-    ((half2*)output)[i] = reducer.template initializePacket<half2>();
+    ((half8*)output)[i] = reducer.template initializePacket<half8>();
   }
 
-  if (thread_id == 0 && num_coeffs % 2 != 0) {
+  if (thread_id == 0 && (num_coeffs % 8) != 0) {
+    for (Index i = 0; i < (num_coeffs % 8); i++) {
+      output[num_packets*8 + i] = reducer.initialize();
+    }
     output[num_coeffs-1] = reducer.initialize();
   }
 }
@@ -233,7 +258,7 @@ __global__ void ReductionInitKernelHalfFloat(Reducer reducer, const Self input, 
 template <int BlockSize, int NumPerThread, typename Self,
           typename Reducer, typename Index>
 __global__ void FullReductionKernelHalfFloat(Reducer reducer, const Self input, Index num_coeffs,
-                                    half* output, half2* scratch) {
+                                    half* output, half8* scratch) {
   eigen_assert(NumPerThread % 2 == 0);
 
   const Index first_index = blockIdx.x * BlockSize * NumPerThread + 2*threadIdx.x;
@@ -242,39 +267,37 @@ __global__ void FullReductionKernelHalfFloat(Reducer reducer, const Self input, 
 
   if (gridDim.x == 1) {
     if (first_index == 0) {
-      if (num_coeffs % 2 != 0) {
-        half last = input.m_impl.coeff(num_coeffs-1);
-        *scratch = __halves2half2(last, reducer.initialize());
+      if (num_coeffs % 8 != 0) {
+        //half last = input.m_impl.coeff(num_coeffs-1);
+        //*scratch = __halves2half2(last, reducer.initialize());
+        Index i;
+        for(i=0; i<(num_coeffs % 8); i++)
+          (*scratch)[i] = input.m_impl.coeff((num_coeffs&~7)+i).data;
+        for(; i<8; i++)
+          (*scratch)[i] = reducer.initialize().data;
       } else {
-        *scratch = reducer.template initializePacket<half2>();
+        *scratch = reducer.template initializePacket<half8>();
       }
     }
     __syncthreads();
   }
   
-  half2 accum = reducer.template initializePacket<half2>();
-  const Index max_iter = numext::mini<Index>((num_coeffs - first_index) / 2, NumPerThread*BlockSize / 2);
+  half8 accum = reducer.template initializePacket<half8>();
+  const Index max_iter = numext::mini<Index>((num_coeffs - first_index) / 8, NumPerThread*BlockSize / 8);
   for (Index i = 0; i < max_iter; i += BlockSize) {
-    const Index index = first_index + 2*i;
+    const Index index = first_index + 8*i;
     eigen_assert(index + 1 < num_coeffs);
-    half2 val = input.m_impl.template packet<Unaligned>(index);
+    half8 val = input.m_impl.template packet<Unaligned>(index);
     reducer.reducePacket(val, &accum);
   }
 
 #pragma unroll
   for (int offset = warpSize/2; offset > 0; offset /= 2) {
-  #if defined(EIGEN_HIPCC)
-    // FIXME : remove this workaround once we have native half/half2 support for __shfl_down
-    union { int i; half2 h; } wka_in, wka_out;
+    union { int i[4]; half8 h; } wka_in, wka_out;
     wka_in.h = accum;
-    wka_out.i = __shfl_down(wka_in.i, offset, warpSize);
+    for(int k=0; k<4; k++)
+      wka_out.i[k] = __shfl_down(wka_in.i[k], offset, warpSize);
     reducer.reducePacket(wka_out.h, &accum);
-  #elif defined(EIGEN_CUDA_SDK_VER) && EIGEN_CUDA_SDK_VER < 90000
-    reducer.reducePacket(__shfl_down(accum, offset, warpSize), &accum);
-  #else
-    int temp = __shfl_down_sync(0xFFFFFFFF, *(int*)(&accum), (unsigned)offset, warpSize);
-    reducer.reducePacket(*(half2*)(&temp), &accum);
-  #endif
   }
 
   if ((threadIdx.x & (warpSize - 1)) == 0) {
@@ -284,18 +307,20 @@ __global__ void FullReductionKernelHalfFloat(Reducer reducer, const Self input, 
   if (gridDim.x == 1) {
     __syncthreads();
     if (first_index == 0) {
-      half tmp = __low2half(*scratch);
-      reducer.reduce(__high2half(*scratch), &tmp);
+      half tmp = half((*scratch)[0]);
+      for (int k=1; k<8; k++)
+        reducer.reduce(half((*scratch)[k]), &tmp);
       *output = tmp;
     }
   }
 }
 
 template <typename Op>
-__global__ void ReductionCleanupKernelHalfFloat(Op reducer, half* output, half2* scratch) {
+__global__ void ReductionCleanupKernelHalfFloat(Op reducer, half* output, half8* scratch) {
   eigen_assert(threadIdx.x == 1);
-  half tmp = __low2half(*scratch);
-  reducer.reduce(__high2half(*scratch), &tmp);
+  half tmp = half((*scratch)[0]);
+  for (int i=1; i<8; i++)
+    reducer.reduce(half((*scratch)[i]), &tmp);
   *output = tmp;
 }
 
@@ -349,7 +374,7 @@ struct FullReductionLauncher<Self, Op, Eigen::half, true> {
     const int block_size = 256;
     const int num_per_thread = 128;
     const int num_blocks = divup<int>(num_coeffs, block_size * num_per_thread);
-    half2* scratch = static_cast<half2*>(device.scratchpad());
+    half8* scratch = static_cast<half8*>(device.scratchpad());
 
     if (num_blocks > 1) {
       // We initialize the output and the scrathpad outside the reduction kernel when we can't be sure that there
@@ -498,18 +523,18 @@ __global__ void InnerReductionKernelHalfFloat(Reducer reducer, const Self input,
   eigen_assert(NumPerThread % unroll_times == 0);
   eigen_assert(unroll_times % 2 == 0);
 
-  const Index input_col_blocks = divup<Index>(num_coeffs_to_reduce, blockDim.x * NumPerThread * 2);
-  const Index num_input_blocks = divup<Index>(input_col_blocks * num_preserved_coeffs, 2);
+  const Index input_col_blocks = divup<Index>(num_coeffs_to_reduce, blockDim.x * NumPerThread * 8);
+  const Index num_input_blocks = divup<Index>(input_col_blocks * num_preserved_coeffs, 8);
 
   const Index num_threads = blockDim.x * gridDim.x;
   const Index thread_id = blockIdx.x * blockDim.x + threadIdx.x;
 
   // Initialize the output values if they weren't initialized by the ReductionInitKernel
   if (gridDim.x == 1) {
-    Index i = 2*thread_id;
-    for (; i + 1 < num_preserved_coeffs; i += 2*num_threads) {
+    Index i = 8*thread_id;
+    for (; i + 7 < num_preserved_coeffs; i += 8*num_threads) {
       half* loc = output + i;
-      *((half2*)loc) = reducer.template initializePacket<half2>();
+      *((half8*)loc) = reducer.template initializePacket<half8>();
     }
     if (i < num_preserved_coeffs) {
       output[i] = reducer.initialize();
@@ -518,33 +543,38 @@ __global__ void InnerReductionKernelHalfFloat(Reducer reducer, const Self input,
   }
 
   for (Index i = blockIdx.x; i < num_input_blocks; i += gridDim.x) {
-    const Index row = 2 * (i / input_col_blocks);
+    const Index row = 8 * (i / input_col_blocks);
 
     if (row + 1 < num_preserved_coeffs) {
       const Index col_block = i % input_col_blocks;
       const Index col_begin = 2 * (col_block * blockDim.x * NumPerThread + threadIdx.x);
 
-      half2 reduced_val1 = reducer.template initializePacket<half2>();
-      half2 reduced_val2 = reducer.template initializePacket<half2>();
+      half8 reduced_val1 = reducer.template initializePacket<half8>();
+      half8 reduced_val2 = reducer.template initializePacket<half8>();
 
       for (Index j = 0; j < NumPerThread; j += unroll_times) {
         const Index last_col = col_begin + blockDim.x * (j + unroll_times - 1) * 2;
         if (last_col >= num_coeffs_to_reduce) {
           Index col = col_begin + blockDim.x * j;
-          for (; col + 1 < num_coeffs_to_reduce; col += blockDim.x) {
-            const half2 val1 = input.m_impl.template packet<Unaligned>(row * num_coeffs_to_reduce + col);
+          for (; col + 7 < num_coeffs_to_reduce; col += blockDim.x) {
+            const half8 val1 = input.m_impl.template packet<Unaligned>(row * num_coeffs_to_reduce + col);
             reducer.reducePacket(val1, &reduced_val1);
-            const half2 val2 = input.m_impl.template packet<Unaligned>((row+1) * num_coeffs_to_reduce + col);
+            const half8 val2 = input.m_impl.template packet<Unaligned>((row+1) * num_coeffs_to_reduce + col);
             reducer.reducePacket(val2, &reduced_val2);
           }
           if (col < num_coeffs_to_reduce) {
             // Peel;
-            const half last1 = input.m_impl.coeff(row * num_coeffs_to_reduce + col);
-            const half2 val1 = __halves2half2(last1, reducer.initialize());
-            reducer.reducePacket(val1, &reduced_val1);
-            const half last2 = input.m_impl.coeff((row+1) * num_coeffs_to_reduce + col);
-            const half2 val2 = __halves2half2(last2, reducer.initialize());
-            reducer.reducePacket(val2, &reduced_val2);
+            //const half last1 = input.m_impl.coeff(row * num_coeffs_to_reduce + col);
+            for (int z = 0; z<2; z++) {
+              half8 val1;
+              int k;
+              for (k = 0; k < num_coeffs_to_reduce-col; k++) 
+                val1[k] = input.m_impl.coeff((row+z) * num_coeffs_to_reduce + col).data;
+              for (; k<8; k++)
+                val1[k] = reducer.initialize().data;
+              //const half2 val1 = __halves2half2(last1, reducer.initialize());
+              reducer.reducePacket(val1, &reduced_val1);
+            }
           }
           break;
         } else {
@@ -560,34 +590,26 @@ __global__ void InnerReductionKernelHalfFloat(Reducer reducer, const Self input,
 
 #pragma unroll
       for (int offset = warpSize/2; offset > 0; offset /= 2) {
-      #if defined(EIGEN_HIPCC)
-	// FIXME : remove this workaround once we have native half/half2 support for __shfl_down
-	union { int i; half2 h; } wka_in, wka_out;
+        union { int i[4]; half8 h; } wka_in, wka_out;
 
-	wka_in.h = reduced_val1;
-	wka_out.i = __shfl_down(wka_in.i, offset, warpSize);
+        wka_in.h = reduced_val1;
+        for(int k = 0; k < 4; k++)
+          wka_out.i[k] = __shfl_down(wka_in.i[k], offset, warpSize);
         reducer.reducePacket(wka_out.h, &reduced_val1);
-	
-	wka_in.h = reduced_val2;
-	wka_out.i = __shfl_down(wka_in.i, offset, warpSize);
+        
+        wka_in.h = reduced_val2;
+        for(int k = 0; k < 4; k++)
+          wka_out.i[k] = __shfl_down(wka_in.i[k], offset, warpSize);
         reducer.reducePacket(wka_out.h, &reduced_val2);
-      #elif defined(EIGEN_CUDA_SDK_VER) && EIGEN_CUDA_SDK_VER < 90000
-        reducer.reducePacket(__shfl_down(reduced_val1, offset, warpSize), &reduced_val1);
-        reducer.reducePacket(__shfl_down(reduced_val2, offset, warpSize), &reduced_val2);
-      #else
-        int temp1 = __shfl_down_sync(0xFFFFFFFF, *(int*)(&reduced_val1), (unsigned)offset, warpSize);
-        int temp2 = __shfl_down_sync(0xFFFFFFFF, *(int*)(&reduced_val2), (unsigned)offset, warpSize);
-        reducer.reducePacket(*(half2*)(&temp1), &reduced_val1);
-        reducer.reducePacket(*(half2*)(&temp2), &reduced_val2);
-      #endif
       }
 
-      half val1 =  __low2half(reduced_val1);
-      reducer.reduce(__high2half(reduced_val1), &val1);
-      half val2 =  __low2half(reduced_val2);
-      reducer.reduce(__high2half(reduced_val2), &val2);
+      half val1 = half(reduced_val1[0]);
+      for(int k = 1; k < 8; k++)
+        reducer.reduce(half(reduced_val1[k]), &val1);
+      half val2 = half(reduced_val2[0]);
+      for(int k = 1; k < 8; k++)
+        reducer.reduce(half(reduced_val2[k]), &val2);
       half2 val = __halves2half2(val1, val2);
-
       if ((threadIdx.x & (warpSize - 1)) == 0) {
         half* loc = output + row;
         atomicReduce((half2*)loc, val, reducer);

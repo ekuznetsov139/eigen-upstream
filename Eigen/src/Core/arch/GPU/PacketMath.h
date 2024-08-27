@@ -53,7 +53,7 @@ template<> struct packet_traits<float> : default_packet_traits
     HasIGammac = 1,
     HasBetaInc = 1,
 
-    HasBlend = 0,
+    HasBlend = 1,
     HasFloor = 1,
   };
 };
@@ -458,6 +458,14 @@ ptranspose(PacketBlock<double2,2>& kernel) {
   kernel.packet[1].x = tmp;
 }
 
+template<> EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE float4 pblend(const Selector<4>& ifPacket, const float4& thenPacket, const float4& elsePacket) {
+  float4 result;
+  for (int i=0; i<4; i++) {
+    result.data[i] = ifPacket.select[i] ? thenPacket.data[i] : elsePacket.data[i];
+  }
+  return result;
+}
+
 #endif
 
 // Packet math for Eigen::half
@@ -482,7 +490,8 @@ template<> struct packet_traits<Eigen::half> : default_packet_traits
     HasExp    = 1,
     HasExpm1  = 1,
     HasLog    = 1,
-    HasLog1p  = 1
+    HasLog1p  = 1,
+    HasBlend  = 1
   };
 };
 
@@ -664,6 +673,14 @@ template<> EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE Eigen::half predux_mul<half8>(c
   for (int i=1; i<8; i++)
     result *= a[i];
   return reinterpret_cast<const Eigen::half&>(result);
+}
+
+template<> EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE half8 pblend(const Selector<8>& ifPacket, const half8& thenPacket, const half8& elsePacket) {
+  half8 result;
+  for (int i=0; i<8; i++) {
+    result[i] = ifPacket.select[i] ? thenPacket[i] : elsePacket[i];
+  }
+  return result;
 }
 
 #define CWISE_OP(X, Y) \

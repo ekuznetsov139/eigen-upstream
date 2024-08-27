@@ -52,7 +52,7 @@ template<> struct packet_traits<float> : default_packet_traits
     HasIGammac = 1,
     HasBetaInc = 1,
 
-    HasBlend = 0,
+    HasBlend = 1,
   };
 };
 
@@ -329,6 +329,14 @@ ptranspose(PacketBlock<double2,2>& kernel) {
   double tmp = kernel.packet[0].y;
   kernel.packet[0].y = kernel.packet[1].x;
   kernel.packet[1].x = tmp;
+}
+
+template<> EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE float4 pblend(const Selector<4>& ifPacket, const float4& thenPacket, const float4& elsePacket) {
+  float4 result;
+  for (int i=0; i<4; i++) {
+    result.data[i] = ifPacket.select[i] ? thenPacket.data[i] : elsePacket.data[i];
+  }
+  return result;
 }
 
 #endif

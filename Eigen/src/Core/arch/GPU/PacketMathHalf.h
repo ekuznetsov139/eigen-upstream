@@ -39,7 +39,8 @@ template<> struct packet_traits<Eigen::half> : default_packet_traits
     HasExp    = 1,
     HasExpm1  = 1,
     HasLog    = 1,
-    HasLog1p  = 1
+    HasLog1p  = 1,
+    HasBlend = 1,
   };
 };
 
@@ -223,6 +224,14 @@ template<> EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE Eigen::half predux_mul<half8>(c
   return reinterpret_cast<const Eigen::half&>(result);
 }
 
+template<> EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE half8 pblend(const Selector<8>& ifPacket, const half8& thenPacket, const half8& elsePacket) {
+  half8 result;
+  for (int i=0; i<8; i++) {
+    result[i] = ifPacket.select[i] ? thenPacket[i] : elsePacket[i];
+  }
+  return result;
+}
+
 #define CWISE_OP(X, Y) \
 template<> EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE half8 X<half8>(const half8& a) {       \
   half8 result;                                                                         \
@@ -238,6 +247,7 @@ __host__ __device__ EIGEN_STRONG_INLINE half8 X(const half8& a) {               
     result[i] = _Float16(Y(float(a[i])));                                               \
   return result;                                                                        \
 }
+
 
 CWISE_OP(plog1p, log1pf)
 CWISE_OP(pexpm1, expm1f)

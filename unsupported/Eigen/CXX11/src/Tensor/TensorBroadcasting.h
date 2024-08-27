@@ -287,7 +287,6 @@ struct TensorEvaluator<const TensorBroadcastingOp<Broadcast, ArgType>, Device>
     if (noOp) {
      return m_impl.template packet<LoadMode>(index);
    }
-
     if constexpr (static_cast<int>(Layout) == static_cast<int>(ColMajor)) {
       if (oneByN && !nByOne) {
         return packetNByOne<LoadMode>(index);
